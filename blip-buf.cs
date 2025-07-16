@@ -1,52 +1,5 @@
-﻿
-using System.Runtime.InteropServices;
-using System.Security;
-using System;
-
-#if binding
-
-public unsafe class blip
-{
-    private const string dll = "blip_buf";
-
-    [DllImport(dll, EntryPoint = "blip_size")]
-    public static extern int blip_size(int size);
-
-    [DllImport(dll, EntryPoint = "blip_create")]
-    public static extern IntPtr blip_create(int size, IntPtr ptr);
-
-    [DllImport(dll, EntryPoint = "blip_new")]
-    public static extern IntPtr blip_new(int sample_count);
-
-    [DllImport(dll, EntryPoint = "blip_set_rates")]
-    public static extern void blip_set_rates(IntPtr _0, double clock_rate, double sample_rate);
-
-    [DllImport(dll, EntryPoint = "blip_clear")]
-    public static extern void blip_clear(IntPtr _0);
-
-    [DllImport(dll, EntryPoint = "blip_add_delta")]
-    public static extern void blip_add_delta(IntPtr _0, uint clock_time, int delta);
-
-    [DllImport(dll, EntryPoint = "blip_add_delta_fast")]
-    public static extern void blip_add_delta_fast(IntPtr _0, uint clock_time, int delta);
-
-    [DllImport(dll, EntryPoint = "blip_clocks_needed")]
-    public static extern int blip_clocks_needed(IntPtr _0, int sample_count);
-
-    [DllImport(dll, EntryPoint = "blip_end_frame")]
-    public static extern void blip_end_frame(IntPtr _0, uint clock_duration);
-
-    [DllImport(dll, EntryPoint = "blip_samples_avail")]
-    public static extern int blip_samples_avail(IntPtr _0);
-
-    [DllImport(dll, EntryPoint = "blip_read_samples")]
-    public static extern int blip_read_samples(IntPtr _0, short* @out, int count, int stereo);
-
-    [DllImport(dll, EntryPoint = "blip_delete")]
-    public static extern void blip_delete(IntPtr _0);
-}
- 
-#else
+﻿//dotnet publish -r win-x64 -c release /p:NativeLib=Shared
+//dotnet publish -r win-x64 -c release /p:NativeLib=Static
 
 
 using fixed_t = System.UInt64;
@@ -219,21 +172,37 @@ public unsafe struct blip
     public int avail;
     public int size;
     public int integrator;
-
-    //public int* sanmples;
-
-    //[UnmanagedCallersOnly]
-
+     
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int* sanmples(blip* blip)
     {
         return (int*)(blip + sizeof(blip));
     }
 
-    [UnmanagedCallersOnly(EntryPoint = "blip_set_rates")]
-    public static void blip_set_rates(blip* blip, float clock_rate, float sample_rate)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static void remove_samples(blip* blip, int count)
     {
-        float factor = time_unit * sample_rate / clock_rate;
+        int remain = blip->avail + buf_extra - count;
+        blip->avail -= count;
+
+        int* buf = sanmples(blip);
+        MemMove(&buf[0], &buf[count], remain * sizeof(int));
+        MemSet(&buf[remain], 0, count * sizeof(int));
+    }
+
+
+    [UnmanagedCallersOnly(EntryPoint = "blip_size")]
+    public static int blip_size(int size)
+    {
+        return sizeof(blip) + (size + buf_extra) * sizeof(int);
+    }
+
+
+
+    [UnmanagedCallersOnly(EntryPoint = "blip_set_rates")]
+    public static void blip_set_rates(blip* blip, double clock_rate, double sample_rate)
+    {
+        var factor = time_unit * sample_rate / clock_rate;
         blip->factor = (fixed_t)factor;
 
         /* Fails if clock_rate exceeds maximum, relative to sample_rate */
@@ -412,18 +381,7 @@ public unsafe struct blip
 
         return count;
     }
-
-    //[UnmanagedCallersOnly]
-    public static void remove_samples(blip* blip, int count)
-    {
-        int remain = blip->avail + buf_extra - count;
-        blip->avail -= count;
-
-        int* buf = sanmples(blip);
-        MemMove(&buf[0], &buf[count], remain * sizeof(int));
-        MemSet(&buf[remain], 0, count * sizeof(int));
-    }
-
+     
     [UnmanagedCallersOnly(EntryPoint = "blip_delete")]
     public static void blip_delete(blip* left, delegate* managed<void*, void> free)
     {
@@ -445,20 +403,17 @@ public unsafe struct blip
         return b;
     }
 
-    //[UnmanagedCallersOnly(EntryPoint = "blip_new")]
-    //public static blip* blip_new(int size, blip* b)
-    //{
-    //    //var b = (blip*)(ptr);
-    //    //b->sanmples = (int*)(b + sizeof(blip));
-    //    if (b != null)
-    //    {
-    //        b->factor = time_unit / blip_max_ratio;
-    //        b->size = size;
-    //        _blip_clear(b);
-    //    }
-    //    return b;
-    //}
+    [UnmanagedCallersOnly(EntryPoint = "blip_create")]
+    public static blip* blip_create(int size, blip* b)
+    {
+        //var b = (blip*)(ptr);
+        //b->sanmples = (int*)(b + sizeof(blip));
+        if (b != null)
+        {
+            b->factor = time_unit / blip_max_ratio;
+            b->size = size;
+            _blip_clear(b);
+        }
+        return b;
+    }
 }
-
-
-#endif
