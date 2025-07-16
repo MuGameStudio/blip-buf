@@ -48,9 +48,10 @@ public unsafe class blip
  
 #else
 
+
 using fixed_t = System.UInt64;
 using System.Runtime.CompilerServices;
-
+using System.Runtime.InteropServices;
 /* Library Copyright (C) 2003-2009 Shay Green. This library is free software;
 you can redistribute it and/or modify it under the terms of the GNU Lesser
 General Public License as published by the Free Software Foundation; either
@@ -219,9 +220,17 @@ public unsafe struct blip
     public int size;
     public int integrator;
 
-    public int* sanmples;
- 
-    //[UnmanagedCallersOnly(EntryPoint = "")]
+    //public int* sanmples;
+
+    //[UnmanagedCallersOnly]
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int* sanmples(blip* blip)
+    {
+        return (int*)(blip + sizeof(blip));
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "blip_set_rates")]
     public static void blip_set_rates(blip* blip, float clock_rate, float sample_rate)
     {
         float factor = time_unit * sample_rate / clock_rate;
@@ -238,8 +247,9 @@ public unsafe struct blip
         /* At this point, factor is most likely rounded up, but could still
         have been rounded down in the floating-point calculation. */
     }
-     
+
     /** Clears entire buffer. Afterwards, blip_samples_avail() == 0. */
+    [UnmanagedCallersOnly(EntryPoint = "blip_clear")]
     public static void blip_clear(blip* blip)
     {
         /* We could set offset to 0, factor/2, or factor-1. 0 is suitable if
@@ -251,18 +261,34 @@ public unsafe struct blip
         blip->offset = blip->factor / 2;
         blip->avail = 0;
         blip->integrator = 0;
-        MemClear(blip->sanmples, (blip->size + buf_extra) * sizeof(int));
+        MemClear(sanmples(blip), (blip->size + buf_extra) * sizeof(int));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void _blip_clear(blip* blip)
+    {
+        /* We could set offset to 0, factor/2, or factor-1. 0 is suitable if
+        factor is rounded up. factor-1 is suitable if factor is rounded down.
+        Since we don't know rounding direction, factor/2 accommodates either,
+        with the slight loss of showing an error in half the time. Since for
+        a 64-bit factor this is years, the halving isn't a problem. */
+
+        blip->offset = blip->factor / 2;
+        blip->avail = 0;
+        blip->integrator = 0;
+        MemClear(sanmples(blip), (blip->size + buf_extra) * sizeof(int));
     }
 
     /** Adds positive/negative delta into buffer at specified clock time. */
     /* Shifting by pre_shift allows calculation using unsigned int rather than possibly-wider fixed_t. On 32-bit platforms, this is likely more efficient.
     And by having pre_shift 32, a 32-bit platform can easily do the shift by simply ignoring the low half. */
+    [UnmanagedCallersOnly(EntryPoint = "blip_add_delta")]
     public static void blip_add_delta(blip* blip, uint time, int delta)
     {
         uint _fixed = (uint)((time * blip->factor + blip->offset) >> pre_shift);
         var offset = blip->avail + (_fixed >> frac_bits);
 
-        int* sout = blip->sanmples + offset;
+        int* sout = sanmples(blip) + offset;
 
         int phase_shift = frac_bits - phase_bits;
         int phase = (int)(_fixed >> phase_shift & (phase_count - 1));
@@ -301,11 +327,12 @@ public unsafe struct blip
     }
 
     /** Same as blip_add_delta(), but uses faster, lower-quality synthesis. */
+    [UnmanagedCallersOnly(EntryPoint = "blip_add_delta_fast")]
     public static void blip_add_delta_fast(blip* blip, uint time, int delta)
     {
         uint _fixed = (uint)((time * blip->factor + blip->offset) >> pre_shift);
         var offset = blip->avail + (_fixed >> frac_bits);
-        int* sout = blip->sanmples + offset;
+        int* sout = sanmples(blip) + offset;
         int interp = (int)(_fixed >> (frac_bits - delta_bits) & (delta_unit - 1));
         int delta2 = delta * interp;
 
@@ -317,6 +344,7 @@ public unsafe struct blip
     }
 
     /** Length of time frame, in clocks, needed to make sample_count additional samples available. */
+    [UnmanagedCallersOnly(EntryPoint = "blip_clocks_needed")]
     public static int blip_clocks_needed(blip* blip, int samples)
     {
         /* Fails if buffer can't hold that many more samples */
@@ -332,6 +360,7 @@ public unsafe struct blip
     /** Makes input clocks before clock_duration available for reading as output samples. 
     Also begins new time frame at clock_duration, so that clock time 0 in the new time frame specifies the same clock as clock_duration in the old time frame specified. 
     Deltas can have been added slightly past clock_duration (up to however many clocks there are in two output samples). */
+    [UnmanagedCallersOnly(EntryPoint = "blip_end_frame")]
     public static void blip_end_frame(blip* blip, uint t)
     {
         fixed_t off = t * blip->factor + blip->offset;
@@ -347,6 +376,7 @@ public unsafe struct blip
      * If 'stereo' is true, writes output to every other element of 'out', 
      * allowing easy interleaving of two buffers into a stereo sample stream.  
      * Outputs 16-bit signed samples. Returns number of samples actually read.  */
+    [UnmanagedCallersOnly(EntryPoint = "blip_read_samples")]
     public static int blip_read_samples(blip* blip, short* data, int count, int stereo)
     {
         //Debug.Assert(count >= 0);
@@ -364,7 +394,7 @@ public unsafe struct blip
                 /* Eliminate fraction */
                 int s = sum >> delta_bits;
 
-                sum += blip->sanmples[i];
+                sum += sanmples(blip)[i];
 
                 if ((short)s != s)
                     s = (s >> 16) ^ short.MaxValue;
@@ -383,47 +413,52 @@ public unsafe struct blip
         return count;
     }
 
+    //[UnmanagedCallersOnly]
     public static void remove_samples(blip* blip, int count)
     {
         int remain = blip->avail + buf_extra - count;
         blip->avail -= count;
 
-        int* buf = blip->sanmples;
+        int* buf = sanmples(blip);
         MemMove(&buf[0], &buf[count], remain * sizeof(int));
         MemSet(&buf[remain], 0, count * sizeof(int));
     }
-     
+
+    [UnmanagedCallersOnly(EntryPoint = "blip_delete")]
     public static void blip_delete(blip* left, delegate* managed<void*, void> free)
     {
         free(left);
     }
 
+    [UnmanagedCallersOnly(EntryPoint = "blip_new")]
     public static blip* blip_new(int size, delegate* managed<int, void*> malloc)
     {
         var ptr = (byte*)malloc(sizeof(blip) + (size + buf_extra) * sizeof(int));
         var b = (blip*)(ptr);
-        b->sanmples = (int*)(ptr + sizeof(blip));
+        //b->sanmples = (int*)(ptr + sizeof(blip));
         if (b != null)
         {
             b->factor = time_unit / blip_max_ratio;
             b->size = size;
-            blip_clear(b);
+            _blip_clear(b);
         }
         return b;
     }
 
-    public static blip* blip_new(int size, byte* ptr)
-    {
-        var b = (blip*)(ptr);
-        b->sanmples = (int*)(ptr + sizeof(blip));
-        if (b != null)
-        {
-            b->factor = time_unit / blip_max_ratio;
-            b->size = size;
-            blip_clear(b);
-        }
-        return b;
-    }
+    //[UnmanagedCallersOnly(EntryPoint = "blip_new")]
+    //public static blip* blip_new(int size, blip* b)
+    //{
+    //    //var b = (blip*)(ptr);
+    //    //b->sanmples = (int*)(b + sizeof(blip));
+    //    if (b != null)
+    //    {
+    //        b->factor = time_unit / blip_max_ratio;
+    //        b->size = size;
+    //        _blip_clear(b);
+    //    }
+    //    return b;
+    //}
 }
+
 
 #endif
